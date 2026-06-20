@@ -4,53 +4,44 @@ __pycache__/
 *$py.class
 *.so
 .Python
+build/
+dist/
+*.egg-info/
+
+# Virtual Environment
 venv/
 env/
-ENV/
-.venv
 
-# Environment
+# Environment variables
 .env
-.env.local
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Data
-data/chroma_db/
-data/knowledge_base/
+# Database
 *.db
 *.sqlite
 
 # Logs
-logs/
 *.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Models
-models/*.bin
-models/*.pt
-models/*.pth
-
-# Outputs
-outputs/
-reports/
-
-# Dependencies
-node_modules/
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Build
-dist/
-build/
-*.egg-info/
+# Audio files
+*.wav
+*.mp3
+/tmp/
+
+# Models
+models/whisper/*.pt
+
+# Frontend
+frontend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
