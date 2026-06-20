@@ -48,4 +48,4 @@ pytest --cov=src tests/  # With coverage
 
 ## Questions?
 
-Open an issue or email: support@useagenticai.in
+Open an issue or email: info@useagenticai.in

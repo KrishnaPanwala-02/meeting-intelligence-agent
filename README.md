@@ -426,9 +426,9 @@ MIT License - see [LICENSE](LICENSE)
 
 ## Support
 
-- Documentation: [docs.useagenticai.in](https://docs.useagenticai.in)
+- Website: [useagenticai.in](https://useagenticai.in)
 - Issues: [GitHub Issues](https://github.com/AgenticAI-Ind/meeting-intelligence-agent/issues)
-- Email: support@useagenticai.in
+- Email: info@useagenticai.in
 
 ---
 
