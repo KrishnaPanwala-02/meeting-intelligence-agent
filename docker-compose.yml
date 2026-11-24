@@ -1,55 +1,135 @@
-version: '3.8'
 
 services:
   postgres:
     image: postgres:14
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d meeting_intelligence"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     environment:
       POSTGRES_DB: meeting_intelligence
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"
     volumes:
       - redis_data:/data
 
   api:
     build: .
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
-      - "8000:8000"
+      - "${API_HOST_PORT:-8000}:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/meeting_intelligence
       - REDIS_URL=redis://redis:6379/0
       - OLLAMA_HOST=http://host.docker.internal:11434
+      - AUDIO_STORAGE_PATH=/data/audio
+      - MAX_AUDIO_SIZE_MB=${MAX_AUDIO_SIZE_MB:-200}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env (>=32 random characters)}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
+      - ACCESS_TOKEN_MINUTES=${ACCESS_TOKEN_MINUTES:-15}
+      - REFRESH_TOKEN_DAYS=${REFRESH_TOKEN_DAYS:-14}
+      - SESSION_MAX_DAYS=${SESSION_MAX_DAYS:-30}
+      - PASSWORD_RESET_MINUTES=${PASSWORD_RESET_MINUTES:-30}
+      - PASSWORD_RESET_URL=${PASSWORD_RESET_URL:-}
+      - EMAIL_ENABLED=${EMAIL_ENABLED:-false}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
+      - ENABLE_DOCS=${ENABLE_DOCS:-true}
+      - ENABLE_GOOGLE_OAUTH=${ENABLE_GOOGLE_OAUTH:-false}
+      - EXPENSIVE_LIMIT_PER_HOUR=${EXPENSIVE_LIMIT_PER_HOUR:-30}
+      - REGISTER_LIMIT_PER_HOUR=${REGISTER_LIMIT_PER_HOUR:-10}
+      - REFRESH_LIMIT_PER_HOUR=${REFRESH_LIMIT_PER_HOUR:-600}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:8000/auth/google/callback}
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID:-}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET:-}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI:-http://localhost:8000/auth/microsoft/callback}
+      - MICROSOFT_TENANT_ID=${MICROSOFT_TENANT_ID:-common}
+      - CALENDAR_TOKEN_ENCRYPTION_KEY=${CALENDAR_TOKEN_ENCRYPTION_KEY:-}
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - .:/app
       - ./tmp:/tmp
+      - ./data/audio:/data/audio
+      - model_cache:/root/.cache
     working_dir: /app
 
   celery-worker:
     build: .
-    command: celery -A src.workers.tasks worker --loglevel=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A src.workers.tasks inspect ping --timeout 10 >/dev/null 2>&1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 90s
+    command: celery -A src.workers.tasks worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-1}
     environment:
+      - AUDIO_STORAGE_PATH=/data/audio
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/meeting_intelligence
       - REDIS_URL=redis://redis:6379/0
+      - HF_TOKEN=${HF_TOKEN:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:8000/auth/google/callback}
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID:-}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET:-}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI:-http://localhost:8000/auth/microsoft/callback}
+      - MICROSOFT_TENANT_ID=${MICROSOFT_TENANT_ID:-common}
+      - CALENDAR_TOKEN_ENCRYPTION_KEY=${CALENDAR_TOKEN_ENCRYPTION_KEY:-}
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - .:/app
       - ./tmp:/tmp
+      - ./data/audio:/data/audio
+      - model_cache:/root/.cache
     working_dir: /app
 
 volumes:
   postgres_data:
   redis_data:
+  audio_data:
+  model_cache:

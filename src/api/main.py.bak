@@ -1,0 +1,236 @@
+"""
+FastAPI Application
+Main API server for Meeting Intelligence Agent.
+"""
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+from datetime import datetime
+import os
+import uuid
+
+from ..agent import (
+    MeetingTranscriber,
+    MeetingSummarizer,
+    ActionItemExtractor,
+    CalendarOptimizer
+)
+from ..models.schemas import (
+    MeetingCreate, MeetingResponse, TranscribeRequest,
+    FindTimeRequest
+)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Meeting Intelligence Agent API",
+    description="AI-powered meeting transcription, summarization, and scheduling",
+    version="1.0.0"
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize agents
+transcriber = MeetingTranscriber(model="base")
+import os
+
+ollama_host = os.getenv(
+    "OLLAMA_HOST",
+    "http://host.docker.internal:11434"
+)
+ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2")
+
+summarizer = MeetingSummarizer(
+    ollama_host=ollama_host,
+    model=ollama_model
+)
+
+action_extractor = ActionItemExtractor(
+    ollama_host=ollama_host,
+    model=ollama_model
+)
+scheduler = CalendarOptimizer()
+
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "name": "Meeting Intelligence Agent API",
+        "version": "1.0.0",
+        "features": ["transcription", "summarization", "action_items", "scheduling"],
+        "docs": "/docs"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+# Meeting Endpoints
+
+@app.post("/api/v1/meetings/start", response_model=MeetingResponse)
+async def start_meeting(meeting: MeetingCreate):
+    """Start a new meeting"""
+    meeting_id = str(uuid.uuid4())
+
+    # In production, save to database
+    return MeetingResponse(
+        id=meeting_id,
+        title=meeting.title,
+        status="in_progress",
+        started_at=datetime.now()
+    )
+
+
+@app.post("/api/v1/meetings/{meeting_id}/end")
+async def end_meeting(meeting_id: str):
+    """End a meeting"""
+    return {
+        "meeting_id": meeting_id,
+        "status": "completed",
+        "ended_at": datetime.now().isoformat()
+    }
+
+
+# Transcription Endpoints
+
+@app.post("/api/v1/meetings/{meeting_id}/transcribe")
+async def transcribe_meeting(
+    meeting_id: str,
+    audio_file: UploadFile = File(...),
+    language: str = "en",
+    identify_speakers: bool = False
+):
+    """Upload audio and transcribe"""
+    # Save uploaded file
+    temp_path = f"/tmp/{meeting_id}_{audio_file.filename}"
+    with open(temp_path, "wb") as f:
+        content = await audio_file.read()
+        f.write(content)
+
+    try:
+        # Transcribe
+        result = transcriber.transcribe(
+            audio_path=temp_path,
+            language=language,
+            identify_speakers=identify_speakers
+        )
+
+        return {
+            "meeting_id": meeting_id,
+            "word_count": result.word_count,
+            "duration_seconds": result.duration_seconds,
+            "speaker_count": result.speaker_count,
+            "segments": [seg.dict() for seg in result.segments]
+        }
+    finally:
+        # Clean up
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@app.get("/api/v1/meetings/{meeting_id}/transcript")
+async def get_transcript(meeting_id: str):
+    """Get meeting transcript"""
+    # In production, fetch from database
+    return {
+        "meeting_id": meeting_id,
+        "transcript": "Mock transcript data"
+    }
+
+
+# Summarization Endpoints
+
+@app.get("/api/v1/meetings/{meeting_id}/summary")
+async def get_summary(meeting_id: str):
+    """Get meeting summary"""
+    # In production, fetch transcript and generate summary
+    return {
+        "meeting_id": meeting_id,
+        "executive_summary": "This was a productive meeting discussing...",
+        "key_points": [],
+        "decisions": [],
+        "next_steps": []
+    }
+
+
+@app.post("/api/v1/meetings/{meeting_id}/summarize")
+async def generate_summary(meeting_id: str):
+    """Generate meeting summary"""
+    # In production, fetch transcript from DB
+    # Mock for now
+    return {
+        "meeting_id": meeting_id,
+        "status": "summary_generated"
+    }
+
+
+# Action Item Endpoints
+
+@app.post("/api/v1/meetings/{meeting_id}/extract-actions")
+async def extract_actions(meeting_id: str):
+    """Extract action items from meeting"""
+    # In production, fetch transcript and extract
+    return {
+        "meeting_id": meeting_id,
+        "action_items": [],
+        "count": 0
+    }
+
+
+@app.get("/api/v1/meetings/{meeting_id}/actions")
+async def get_actions(meeting_id: str):
+    """Get action items for meeting"""
+    return {
+        "meeting_id": meeting_id,
+        "action_items": []
+    }
+
+
+# Calendar Endpoints
+
+@app.post("/api/v1/calendar/find-optimal-time")
+async def find_optimal_time(request: FindTimeRequest):
+    """Find optimal meeting time"""
+    optimal_slot = await scheduler.find_optimal_time(
+        participants=request.participants,
+        duration_minutes=request.duration_minutes,
+        preferred_days=request.preferred_days,
+        time_range=request.time_range
+    )
+
+    return {
+        "optimal_time": optimal_slot.start_time.isoformat(),
+        "end_time": optimal_slot.end_time.isoformat(),
+        "confidence": optimal_slot.confidence,
+        "reasoning": optimal_slot.reasoning
+    }
+
+
+@app.get("/api/v1/calendar/{user_email}/health")
+async def analyze_calendar(user_email: str):
+    """Analyze calendar health"""
+    health = await scheduler.analyze_calendar(user_email)
+
+    return {
+        "user_email": user_email,
+        "meeting_hours_per_week": health.meeting_hours_per_week,
+        "focus_time_blocks": health.focus_time_blocks,
+        "fragmentation_score": health.fragmentation_score,
+        "recommendations": await scheduler.get_recommendations(health)
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

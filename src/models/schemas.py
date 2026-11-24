@@ -17,6 +17,9 @@ class TranscriptSegment(BaseModel):
     text: str
     speaker: Optional[str] = None
     confidence: float = 0.0
+    # Word timings are used internally to split segments at speaker changes
+    # and are never serialized or stored.
+    words: Optional[List[Dict[str, Any]]] = Field(default=None, exclude=True)
 
     class Config:
         from_attributes = True
@@ -31,6 +34,9 @@ class TranscriptionResult(BaseModel):
     word_count: int
     speaker_count: int = 0
     created_at: datetime
+    processing_seconds: Optional[float] = None
+    # {speaker label: voice embedding}; internal, never serialized.
+    speaker_voices: Optional[Dict[str, List[float]]] = Field(default=None, exclude=True)
 
     def export_txt(self, path: str):
         """Export to text file"""
@@ -76,6 +82,8 @@ class ActionItem(BaseModel):
     task: str
     assignee: str = "TBD"
     due_date: Optional[datetime] = None
+    # Original spoken deadline wording (not stored in the database).
+    due_date_phrase: Optional[str] = None
     priority: str = "medium"  # low, medium, high
     status: str = "pending"  # pending, in_progress, completed
     dependencies: List[str] = []
@@ -117,10 +125,10 @@ class SchedulingRecommendation(BaseModel):
 
 class MeetingCreate(BaseModel):
     """Create meeting request"""
-    title: str = Field(min_length=1)
-    participants: List[str]
+    title: str = Field(min_length=1, max_length=200)
+    participants: List[str] = Field(default_factory=list, max_length=100)
     scheduled_time: Optional[datetime] = None
-    duration_minutes: int = 60
+    duration_minutes: int = Field(default=60, ge=1, le=1440)
 
 
 class MeetingResponse(BaseModel):

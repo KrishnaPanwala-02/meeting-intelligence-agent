@@ -2,13 +2,42 @@
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 from src.api.main import app
+from src.models.database import Base
+from src.models.db import get_db
+from src.services.auth import get_current_user
+from tests.conftest import admin_override
 
 
 @pytest.fixture
 def client():
-    """Create test client"""
-    return TestClient(app)
+    """Test client backed by an isolated in-memory database.
+
+    Tests must never write to the real PostgreSQL database.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    def override_get_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = admin_override
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 def test_root_endpoint(client):

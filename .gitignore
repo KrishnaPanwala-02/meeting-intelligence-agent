@@ -45,3 +45,7 @@ frontend/node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Host worker (GPU) environment and local audio copy
+.venv-host/
+/data/

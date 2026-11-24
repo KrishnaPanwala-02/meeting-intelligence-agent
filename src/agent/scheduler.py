@@ -1,157 +1,138 @@
 """
 Calendar Optimization Agent
-Smart scheduling and calendar analysis.
+Scheduling intelligence computed from the internal meeting database.
 """
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import List, Optional, Dict
+
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from ..models.schemas import CalendarHealth, TimeSlot, SchedulingRecommendation
+from ..services import scheduling
+
+
+class NoAvailableSlotError(RuntimeError):
+    """No free slot satisfies the request."""
 
 
 class CalendarOptimizer:
     """
     Calendar Optimization Agent
 
-    Features:
-    - Calendar health analysis
-    - Optimal meeting time finding
-    - Meeting load optimization
-    - Focus time protection
-    - Auto-decline suggestions
+    All results are derived from meetings stored in PostgreSQL; there is no
+    external calendar and no simulated data.
+
+    - find_optimal_time: best free slot for all participants
+    - analyze_calendar: real meeting-load metrics for a user
+    - get_recommendations: advice derived from those metrics
     """
 
     def __init__(self):
-        """Initialize Calendar Optimizer"""
-        self.working_hours_start = 9  # 9 AM
-        self.working_hours_end = 17   # 5 PM
+        self.working_hours_start = 9
+        self.working_hours_end = 17
         logger.info("Calendar Optimizer initialized")
 
     async def find_optimal_time(
         self,
+        db: Session,
         participants: List[str],
         duration_minutes: int,
         preferred_days: Optional[List[str]] = None,
-        time_range: Optional[Dict[str, str]] = None
-    ) -> TimeSlot:
-        """
-        Find optimal meeting time for participants.
-
-        Args:
-            participants: List of participant emails
-            duration_minutes: Meeting duration
-            preferred_days: Preferred days of week
-            time_range: Time range (start, end)
-
-        Returns:
-            Optimal TimeSlot
-        """
-        logger.info(f"Finding optimal time for {len(participants)} participants")
-
-        # In production, fetch actual calendar availability
-        # For now, return mock optimal time
-        optimal_time = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
-        optimal_time += timedelta(days=1)  # Tomorrow
-
-        return TimeSlot(
-            start_time=optimal_time,
-            end_time=optimal_time + timedelta(minutes=duration_minutes),
-            participants=participants,
-            confidence=0.9,
-            reasoning="Morning slot with all participants available, no back-to-back meetings"
+        time_range: Optional[Dict[str, str]] = None,
+        limit: int = 5,
+    ) -> List[TimeSlot]:
+        """Return ranked free slots (best first); raises if none exist."""
+        day_start, day_end, from_date, to_date = scheduling.parse_search_window(
+            time_range, self.working_hours_start, self.working_hours_end
         )
+        slots = scheduling.suggest_slots(
+            db,
+            participants=participants,
+            duration_minutes=duration_minutes,
+            preferred_days=preferred_days,
+            day_start=day_start,
+            day_end=day_end,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+        )
+        if not slots:
+            raise NoAvailableSlotError(
+                "No free slot found for all participants in the search window"
+            )
 
-    async def analyze_calendar(self, user_email: str) -> CalendarHealth:
-        """
-        Analyze calendar health metrics.
+        best_score = max(s.score for s in slots)
+        return [
+            TimeSlot(
+                start_time=s.start,
+                end_time=s.end,
+                participants=participants,
+                # Share of the maximum achievable score for a slot.
+                confidence=round(max(0.0, min(1.0, s.score / 115.0)), 2),
+                reasoning="; ".join(s.reasons),
+            )
+            for s in slots
+        ]
 
-        Args:
-            user_email: User's email
-
-        Returns:
-            CalendarHealth with metrics and insights
-        """
-        logger.info(f"Analyzing calendar for: {user_email}")
-
-        # Mock analysis - in production, fetch actual calendar data
+    async def analyze_calendar(
+        self, db: Session, user_email: str, days: int = 28
+    ) -> CalendarHealth:
+        """Meeting-load metrics from the user's stored meetings."""
+        m = scheduling.calendar_metrics(
+            db, user_email, days=days,
+            day_start=datetime.min.time().replace(hour=self.working_hours_start),
+            day_end=datetime.min.time().replace(hour=self.working_hours_end),
+        )
         return CalendarHealth(
             user_email=user_email,
-            meeting_hours_per_week=15.5,
-            focus_time_blocks=12,
-            fragmentation_score=6.5,
-            back_to_back_meetings=8,
-            average_meeting_duration=45,
-            meeting_count_per_week=22,
-            analyzed_at=datetime.now()
+            meeting_hours_per_week=m["meeting_hours_per_week"],
+            focus_time_blocks=m["focus_time_blocks"],
+            fragmentation_score=m["fragmentation_score"],
+            back_to_back_meetings=m["back_to_back_meetings"],
+            average_meeting_duration=m["average_meeting_duration"],
+            meeting_count_per_week=m["meeting_count_per_week"],
+            analyzed_at=datetime.now(),
         )
 
     async def get_recommendations(
-        self,
-        health: CalendarHealth
+        self, health: CalendarHealth
     ) -> List[SchedulingRecommendation]:
-        """
-        Get calendar optimization recommendations.
-
-        Args:
-            health: Calendar health metrics
-
-        Returns:
-            List of recommendations
-        """
+        """Advice derived from real per-week metrics."""
         recommendations = []
 
-        if health.back_to_back_meetings > 5:
+        if health.back_to_back_meetings > 3:
             recommendations.append(SchedulingRecommendation(
                 suggestion="Add buffer time between meetings",
-                reasoning="You have many back-to-back meetings causing fatigue",
-                estimated_time_saved=2.5,
-                priority="high"
+                reasoning=(
+                    f"{health.back_to_back_meetings} back-to-back meetings "
+                    "per week leave no time to recover or prepare"
+                ),
+                estimated_time_saved=round(health.back_to_back_meetings * 0.25, 1),
+                priority="high",
             ))
 
-        if health.focus_time_blocks < 10:
+        if health.focus_time_blocks < 3:
             recommendations.append(SchedulingRecommendation(
                 suggestion="Block focus time in your calendar",
-                reasoning="Insufficient deep work time for productivity",
-                estimated_time_saved=5.0,
-                priority="high"
+                reasoning=(
+                    f"Only {health.focus_time_blocks} uninterrupted 2-hour "
+                    "blocks per week for deep work"
+                ),
+                estimated_time_saved=round((3 - health.focus_time_blocks) * 2.0, 1),
+                priority="high",
             ))
 
         if health.meeting_hours_per_week > 20:
             recommendations.append(SchedulingRecommendation(
                 suggestion="Reduce meeting attendance",
-                reasoning="Meeting load exceeds recommended 20h/week",
-                estimated_time_saved=3.0,
-                priority="medium"
+                reasoning=(
+                    f"{health.meeting_hours_per_week} meeting hours per week "
+                    "exceeds the recommended 20"
+                ),
+                estimated_time_saved=round(health.meeting_hours_per_week - 20, 1),
+                priority="medium",
             ))
 
         return recommendations
-
-    async def auto_decline_meetings(
-        self,
-        user: str,
-        criteria: Dict[str, Any]
-    ) -> List[str]:
-        """
-        Auto-decline meetings based on criteria.
-
-        Args:
-            user: User email
-            criteria: Decline criteria
-
-        Returns:
-            List of declined meeting IDs
-        """
-        logger.info(f"Auto-declining meetings for {user} based on criteria")
-
-        # In production, fetch meetings and apply criteria
-        declined = []
-
-        # Mock declined meetings
-        if criteria.get('optional'):
-            declined.append("meeting-1")
-        if criteria.get('large_attendee_count'):
-            declined.append("meeting-2")
-
-        logger.info(f"Auto-declined {len(declined)} meetings")
-        return declined
