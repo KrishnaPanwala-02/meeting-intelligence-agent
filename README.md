@@ -203,11 +203,9 @@ The suite covers: unit tests (deadline resolution, summarizer, scheduling, auth)
 
 ## Known limitations
 
-- No e-mail verification at sign-up and no multi-factor authentication.
+
 - Participants can read but not modify a meeting.
 - All times are naive and treated as one timezone (inputs with an offset are converted to UTC).
-- Rate limiting and login lockout are skipped (fail open) if Redis is unavailable.
-- Pinned dependencies include old versions with published advisories (`python-multipart`, `fastapi`, and unused `langchain`/`nltk`); upgrade before exposing the service publicly.
 - The PostgreSQL password in `docker-compose.yml` is a development default; Redis has no password (neither is published on the host in production mode).
 - Containers run as root.
 
