@@ -4,6 +4,7 @@ Real-time and batch transcription using Whisper AI.
 """
 
 import os
+import re
 import math
 import subprocess
 import tempfile
@@ -24,6 +25,11 @@ except ImportError:
     WHISPER_AVAILABLE = False
 
 from ..models.schemas import TranscriptSegment, TranscriptionResult
+
+
+# The raw speaker label for the person using this computer in a recording that keeps the microphone
+# (left channel) apart from the meeting tab (right channel).
+LOCAL = "local"
 
 
 class TranscriptionUnavailableError(RuntimeError):
@@ -138,6 +144,8 @@ class MeetingTranscriber:
         identify_speakers: bool = False,
         word_timestamps: bool = True,
         known_voices: Optional[Dict[str, List[List[float]]]] = None,
+        online: bool = False,
+        local_name: Optional[str] = None,
     ) -> TranscriptionResult:
         """
         Transcribe audio file to text.
@@ -166,10 +174,11 @@ class MeetingTranscriber:
             # Working out who speaks does not depend on the words, so it runs at the same time as
             # Whisper (both are heavy but release the interpreter lock): about the time of the slower one.
             self.last_speaker_voices = None
+            self.last_local_label = None
             pool = future = None
             if identify_speakers:
                 pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diarize")
-                future = pool.submit(self._diarize_file, audio_path, known_voices)
+                future = pool.submit(self._diarize_recording, audio_path, known_voices, online, local_name)
             try:
                 # Speaker splitting needs word timings.
                 t0 = time.monotonic()
@@ -342,7 +351,7 @@ class MeetingTranscriber:
             logger.warning(f"Could not use the {device} GPU for speaker analysis, using the CPU: {exc}")
             return "cpu"
 
-    def _diarize_file(self, audio_path: str, known_voices: Optional[Dict[str, List[List[float]]]] = None):
+    def _diarize_file(self, audio_path: str, known_voices: Optional[Dict[str, List[List[float]]]] = None, online: bool = False):
         """Who speaks when, for a whole recording: ([(start, end, raw speaker)], {raw speaker: voice})."""
         t0 = time.monotonic()
         pipeline = self._load_diarization_pipeline()
@@ -364,7 +373,7 @@ class MeetingTranscriber:
             ]
             if known_voices:
                 try:
-                    turns, raw_voices = self._name_turns(pipeline, readable, turns, raw_voices, known_voices)
+                    turns, raw_voices = self._name_turns(pipeline, readable, turns, raw_voices, known_voices, online)
                 except Exception as exc:   # an extra: the clusters above are still good
                     logger.warning(f"Could not match individual turns to saved voices: {exc}")
         logger.info(f"Speaker analysis took {time.monotonic() - t0:.1f}s")
@@ -380,7 +389,7 @@ class MeetingTranscriber:
         nb = math.sqrt(sum(y * y for y in b))
         return dot / (na * nb) if na and nb else 0.0
 
-    def _name_turns(self, pipeline, audio_path, turns, raw_voices, known_voices):
+    def _name_turns(self, pipeline, audio_path, turns, raw_voices, known_voices, online=False):
         """
         Recognise people turn by turn. The diarizer groups voices that sound alike into one speaker, so in a
         meeting with many people several of them can end up as one. Each turn is therefore also compared
@@ -426,8 +435,12 @@ class MeetingTranscriber:
             ranked = np.argsort(-ranking[:, col])
             best = ranked[0]
             second = ranking[ranked[1], col] if len(ranked) > 1 else -np.inf
+            by_score = np.sort(scores[:, col])[::-1]
+            runner_up = by_score[1] if len(by_score) > 1 else 0.0
             if scores[best, col] >= min_score and ranking[best, col] - second >= margin:
                 chosen[i] = names[best]
+            elif online and scores[best, col] >= 0.6 and scores[best, col] - runner_up >= 0.12:
+                chosen[i] = names[best]          # a plainly clear match, even when the recording is short of turns
         out, found = [], {}
         for i, (start, end, raw) in enumerate(turns):
             if i in chosen:
@@ -437,10 +450,168 @@ class MeetingTranscriber:
             else:
                 out.append((start, end, raw))
         voices = dict(raw_voices)
+        if online:
+            # A speaker made of turns that fit different people, or that do not fit the person most of its
+            # turns match, is several people the diarizer blended. Its single blended voice must not be
+            # given any one name, so it is dropped: its clear turns keep their own matches and the rest stay
+            # unnamed ("Speaker N") rather than being forced onto someone.
+            index = {n: r for r, n in enumerate(names)}
+            members = {}
+            for col, i in enumerate(order):
+                members.setdefault(turns[i][2], []).append((col, i))
+            for raw, rows in members.items():
+                people = {chosen[i] for _, i in rows if i in chosen}
+                if not people:
+                    continue
+                if len(people) > 1:
+                    voices.pop(raw, None)
+                    continue
+                who = next(iter(people))
+                misfits = sum(1 for col, i in rows if i not in chosen and scores[index[who], col] < 0.5)
+                if misfits and misfits / len(rows) >= 0.25:
+                    voices.pop(raw, None)
         for label, vecs in found.items():
             voices[label] = [float(x) for x in np.mean(np.array(vecs), axis=0)]
         logger.info(f"Matched {sum(len(v) for v in found.values())} turns to {len(found)} saved voices")
         return out, voices
+
+    # ------------------------------------------------------------------ online meetings
+
+    LOCAL_OVER_REMOTE = 1.5      # the microphone must be this much louder than the tab to be "you"
+    LOCAL_MIN_GAP = 0.3          # seconds: shorter silences inside your own speech do not split it
+    LOCAL_MIN_TURN = 0.25
+    LOCAL_VOICE_MAX_SECONDS = 20.0
+    LOCAL_VOICE_MIN_MATCH = 0.3  # below this the microphone voice contradicts the account's saved voice
+
+    def _diarize_recording(self, audio_path, known_voices=None, online=False, local_name=None):
+        """
+        Who speaks when. Online-meeting recordings keep the microphone and the meeting tab on separate
+        channels, which tells "me" from "everyone else" by channel instead of by a blended voice; any other
+        recording (and one without separate channels) is analysed as a whole, as before.
+        """
+        if online:
+            try:
+                found = self._diarize_online(audio_path, known_voices, local_name)
+                if found is not None:
+                    return found
+            except Exception as exc:       # never lose the transcript over this: analyse the mixed audio
+                logger.warning(f"Could not separate the channels of the online recording: {exc}")
+        return self._diarize_file(audio_path, known_voices, online=online)
+
+    @staticmethod
+    @contextmanager
+    def _channel_files(audio_path: str):
+        """Yield (left, right) mono 16 kHz WAV paths when the two channels really differ, else None."""
+        import numpy as np
+        import soundfile as sf
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for index, name in enumerate(("left", "right")):
+                out = os.path.join(tmp, f"{name}.wav")
+                proc = subprocess.run(
+                    ["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", audio_path, "-vn",
+                     "-af", f"pan=mono|c0=c{index}", "-ar", "16000", out],
+                    capture_output=True, text=True, timeout=1800,
+                )
+                if proc.returncode != 0 or not os.path.exists(out):
+                    yield None
+                    return
+                paths.append(out)
+            left, _ = sf.read(paths[0], dtype="float32")
+            right, _ = sf.read(paths[1], dtype="float32")
+            n = min(len(left), len(right))
+            if n < 16000:
+                yield None
+                return
+            left, right = left[:n], right[:n]
+            total = float(np.sqrt(np.mean((left + right) ** 2))) + 1e-9
+            difference = float(np.sqrt(np.mean((left - right) ** 2)))
+            # Two identical channels (a recording from before the channels were separated, or without a
+            # microphone) have no difference: nothing to separate.
+            yield (paths[0], paths[1]) if difference / total > 0.25 else None
+
+    @staticmethod
+    def _frame_energy(path: str, hop: float = 0.02):
+        import numpy as np
+        import soundfile as sf
+        data, rate = sf.read(path, dtype="float32")
+        size = max(1, int(rate * hop))
+        frames = len(data) // size
+        return np.sqrt(np.mean(data[: frames * size].reshape(frames, size) ** 2, axis=1)), hop
+
+    def _local_turns(self, left_path: str, right_path: str):
+        """[(start, end, LOCAL)] where the microphone is clearly the louder side: you are the one speaking."""
+        import numpy as np
+        e_left, hop = self._frame_energy(left_path)
+        e_right, _ = self._frame_energy(right_path)
+        n = min(len(e_left), len(e_right))
+        e_left, e_right = e_left[:n], e_right[:n]
+        if n == 0:
+            return []
+        floor = max(float(np.percentile(e_left, 95)) * 0.1, 1e-4)
+        active = (e_left > floor) & (e_left > self.LOCAL_OVER_REMOTE * e_right)
+        turns, start, last = [], None, None
+        for i, on in enumerate(active):
+            if on:
+                if start is None:
+                    start = i
+                last = i
+            elif start is not None and (i - last) * hop > self.LOCAL_MIN_GAP:
+                turns.append((start * hop, (last + 1) * hop))
+                start = None
+        if start is not None:
+            turns.append((start * hop, (last + 1) * hop))
+        return [(a, b, LOCAL) for a, b in turns if b - a >= self.LOCAL_MIN_TURN]
+
+    def _local_voice(self, pipeline, left_path: str, turns):
+        """One voice embedding from the first stretches of your own speech (None if there is too little)."""
+        import numpy as np
+        import torch
+        from pyannote.core import Segment
+        waves, total = [], 0.0
+        for start, end, _ in turns:
+            if end - start < 0.8:
+                continue
+            stop = min(end, start + (self.LOCAL_VOICE_MAX_SECONDS - total))
+            wave, _sr = pipeline._audio.crop(left_path, Segment(start, stop), mode="pad")
+            waves.append(wave)
+            total += stop - start
+            if total >= self.LOCAL_VOICE_MAX_SECONDS:
+                break
+        if total < 2.0:
+            return None
+        with torch.no_grad():
+            vec = np.asarray(pipeline._embedding(torch.cat(waves, dim=1)[None]))[0].astype(float)
+        return [float(x) for x in vec] if np.all(np.isfinite(vec)) else None
+
+    def _diarize_online(self, audio_path, known_voices, local_name):
+        """
+        Left = your microphone, right = the meeting tab. You are found by the microphone being louder; the
+        other participants are separated from the tab channel alone, where your own voice never appears.
+        Returns None when the channels are not separate.
+        """
+        with self._channel_files(audio_path) as pair:
+            if pair is None:
+                return None
+            left, right = pair
+            local = self._local_turns(left, right)
+            others = {n: s for n, s in (known_voices or {}).items() if not local_name or n.lower() != local_name.lower()}
+            remote_turns, voices = self._diarize_file(right, others, online=True)
+            voices = dict(voices)
+            label = None
+            if local:
+                mine = self._local_voice(self._load_diarization_pipeline(), left, local)
+                if mine is not None:
+                    voices[LOCAL] = mine
+                # the account's name only if the microphone voice does not contradict its saved voice
+                saved = [s for n, s in (known_voices or {}).items() if local_name and n.lower() == local_name.lower()]
+                contradicts = bool(mine and saved and max(self._cos(x, mine) for x in saved[0]) < self.LOCAL_VOICE_MIN_MATCH)
+                label = None if contradicts or not local_name else local_name
+            self.last_local_label = label
+            # Anything the tab diarization found while you were speaking is the microphone leaking into it.
+            logger.info(f"Online recording: {len(local)} stretches of your own speech, "
+                        f"{len({t[2] for t in remote_turns})} other speakers")
+            return remote_turns + local, voices
 
     def _identify_speakers(
         self,
@@ -472,8 +643,11 @@ class MeetingTranscriber:
             if raw not in speaker_names:
                 if raw.startswith("known:"):
                     speaker_names[raw] = raw[len("known:"):]
+                elif raw == LOCAL and getattr(self, "last_local_label", None):
+                    speaker_names[raw] = self.last_local_label
                 else:
-                    speaker_names[raw] = f"Speaker {sum(1 for r in speaker_names if not r.startswith('known:')) + 1}"
+                    taken = sum(1 for r, n in speaker_names.items() if re.fullmatch(r"Speaker \d+", n))
+                    speaker_names[raw] = f"Speaker {taken + 1}"
             return speaker_names[raw]
 
         result: List[TranscriptSegment] = []

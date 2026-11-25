@@ -9,6 +9,7 @@ import FollowUpCard from '../components/FollowUpCard'
 import TaskThreadDialog from '../components/TaskThreadDialog'
 import SpeakersCard from '../components/Speakers'
 import { JobProgress, MeetingBadges, meetingWhen, whoCanTick } from '../components/domain'
+import RenameMeetingDialog from '../components/RenameMeetingDialog'
 import { IconComment, IconDownload, IconEdit, IconFolder, IconMic, IconPlus, IconSparkle, IconTrash } from '../components/icons'
 import {
   Badge,
@@ -128,7 +129,7 @@ export default function MeetingDetailPage() {
   const actions = useAsync(() => meetingsApi.actions(id).then((r) => r.action_items), [id, resultsKey])
 
   // ── dialogs ─────────────────────────────────────────────────────
-  const [dialog, setDialog] = useState<'process' | 'cancel' | 'delete' | 'edit' | 'series' | 'folder' | null>(null)
+  const [dialog, setDialog] = useState<'process' | 'cancel' | 'delete' | 'edit' | 'series' | 'folder' | 'rename' | null>(null)
   const [cancelScope, setCancelScope] = useState<'this' | 'following'>('this')
   const [busy, setBusy] = useState(false)
 
@@ -244,6 +245,11 @@ export default function MeetingDetailPage() {
             <LinkButton to={`/ask?meeting=${m.id}`}>
               <IconSparkle /> Ask about this
             </LinkButton>
+          )}
+          {canWrite && (
+            <Button onClick={() => setDialog('rename')}>
+              <IconEdit /> Rename
+            </Button>
           )}
           {canWrite && m.is_owner !== false && (
             <Button onClick={() => setDialog('folder')}>
@@ -375,6 +381,7 @@ export default function MeetingDetailPage() {
         />
       )}
       {dialog === 'folder' && <FolderDialog meeting={m} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); meeting.reload() }} />}
+      {dialog === 'rename' && <RenameMeetingDialog meetingId={m.id} title={m.title} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); meeting.reload() }} />}
       {dialog === 'series' && <SeriesDialog meetingId={id} onClose={() => setDialog(null)} />}
       {dialog === 'delete' && (
         <ConfirmDialog
@@ -1357,8 +1364,10 @@ function DetailsPanel({ meeting }: { meeting: Meeting }) {
     ...(meeting.source === 'online_tab'
       ? ([['Recorded from', `An online meeting (browser tab audio${meeting.consent_at ? `, everyone’s consent confirmed ${fmtDateTime(fromServerUtc(meeting.consent_at))}` : ''})`]] as [string, React.ReactNode][])
       : meeting.source === 'browser_mic'
-        ? ([['Recorded from', 'The microphone in the browser']] as [string, React.ReactNode][])
-        : []),
+        ? ([['Recorded from', 'Recorded in this website with the microphone']] as [string, React.ReactNode][])
+        : meeting.source === 'upload'
+          ? ([['Recorded from', 'An audio file uploaded from this device']] as [string, React.ReactNode][])
+          : []),
     ['Meeting ID', <span key="i" className="mono small">{meeting.id}</span>],
   ]
   return (

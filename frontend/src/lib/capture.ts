@@ -65,7 +65,11 @@ export interface Mixer {
   close: () => void
 }
 
-/** Mix the tab's audio and (optionally) the microphone into one stream; the tab is never played aloud again. */
+/**
+ * Record the tab's audio and (optionally) the microphone, the tab is never played aloud again.
+ * With a microphone the two go on SEPARATE channels (microphone = left, meeting tab = right), so the
+ * server can tell you from the other participants by channel instead of guessing from a blended voice.
+ */
 export function buildMixer(tabAudio: MediaStream, mic: MediaStream | null): Mixer {
   const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
   if (!Ctx) throw new Error('This browser cannot mix audio. Use a current Chrome or Edge.')
@@ -76,7 +80,14 @@ export function buildMixer(tabAudio: MediaStream, mic: MediaStream | null): Mixe
   const tabAnalyser = ctx.createAnalyser()
   tabAnalyser.fftSize = 1024
   tab.connect(tabAnalyser)
-  tab.connect(out)
+  // Without a microphone there is nobody to separate: the tab plays on both channels as before.
+  const merger = mic && ctx.createChannelMerger ? ctx.createChannelMerger(2) : null
+  if (merger) {
+    tab.connect(merger, 0, 1)
+    merger.connect(out)
+  } else {
+    tab.connect(out)
+  }
 
   let micAnalyser: AnalyserNode | null = null
   if (mic) {
@@ -84,7 +95,8 @@ export function buildMixer(tabAudio: MediaStream, mic: MediaStream | null): Mixe
     micAnalyser = ctx.createAnalyser()
     micAnalyser.fftSize = 1024
     m.connect(micAnalyser)
-    m.connect(out)
+    if (merger) m.connect(merger, 0, 0)
+    else m.connect(out)
   }
   void ctx.resume?.().catch?.(() => undefined)
   return {

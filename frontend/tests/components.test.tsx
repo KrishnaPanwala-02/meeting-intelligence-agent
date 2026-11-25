@@ -652,32 +652,16 @@ describe('tasks page', () => {
     ],
   }
 
-  it('shows my tasks first, then the others, and only mine can be ticked', async () => {
+  it('lists only my tasks, and never anyone else’s, even if the server sent them', async () => {
     tokens.set(pair(1) as Parameters<typeof tokens.set>[0])
     mockServer({ ...emptyApp, 'GET /auth/me': meHandler, '/api/v1/actions': () => tasks })
     renderApp('/tasks')
-    const headings = await screen.findAllByRole('heading', { level: 2 })
-    const names = headings.map((h) => h.textContent)
-    expect(names[0]).toMatch(/Assigned to me · 1/)
-    expect(names[1]).toMatch(/Assigned to others · 2/)
-
-    const order = screen.getAllByRole('checkbox').map((c) => c.getAttribute('aria-label') ?? '')
-    expect(order[0]).toContain('Complete the model training')
-    expect(screen.getByRole('checkbox', { name: /model training/ })).toBeEnabled()
-    expect(screen.getByRole('checkbox', { name: /project report/ })).toBeDisabled()
-    expect(screen.getByRole('checkbox', { name: /Book a room/ })).toBeDisabled()
-  })
-
-  it('can be narrowed to only my tasks', async () => {
-    tokens.set(pair(1) as Parameters<typeof tokens.set>[0])
-    const user = userEvent.setup()
-    mockServer({ ...emptyApp, 'GET /auth/me': meHandler, '/api/v1/actions': () => tasks })
-    renderApp('/tasks')
-    await screen.findByText('Prepare the project report')
-    await user.click(screen.getByRole('button', { name: 'Only mine' }))
+    expect(await screen.findByText('Complete the model training')).toBeInTheDocument()
     expect(screen.queryByText('Prepare the project report')).not.toBeInTheDocument()
-    expect(screen.getByText('Complete the model training')).toBeInTheDocument()
+    expect(screen.queryByText('Book a room')).not.toBeInTheDocument()
     expect(screen.queryByText(/Assigned to others/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Only mine' })).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /model training/ })).toBeEnabled()
   })
 
   it('says so when nothing is assigned to me', async () => {
@@ -687,8 +671,8 @@ describe('tasks page', () => {
       '/api/v1/actions': () => ({ count: 1, total: 1, action_items: [row('a', 'Prepare the project report', 'Rahul Patel', false)] }),
     })
     renderApp('/tasks')
-    expect(await screen.findByText('Nothing assigned to you here.')).toBeInTheDocument()
-    expect(screen.getByText('Prepare the project report')).toBeInTheDocument()
+    expect(await screen.findByText('You are all caught up')).toBeInTheDocument()
+    expect(screen.queryByText('Prepare the project report')).not.toBeInTheDocument()
   })
 })
 
@@ -966,9 +950,10 @@ describe('what a shared-with user sees', () => {
     expect(await screen.findByText('Assigned to you')).toBeInTheDocument()
     const stat = screen.getByText('Assigned to you').parentElement!
     expect(within(stat).getByText('1')).toBeInTheDocument()
-    expect(within(stat).getByText('of 2 open in your meetings')).toBeInTheDocument()
+    expect(within(stat).getByText('open tasks')).toBeInTheDocument()
     const order = screen.getAllByRole('checkbox').map((c) => c.getAttribute('aria-label') ?? '')
-    expect(order[0]).toContain('Prepare the project report')          // mine first
+    expect(order).toHaveLength(1)                                       // only my own task is listed
+    expect(order[0]).toContain('Prepare the project report')
     expect(screen.getByText('Shared by Krishna Panwala')).toBeInTheDocument()
     expect(calls.some((c) => c.url.includes('mine=true') && c.url.includes('due_to'))).toBe(true)
     expect(screen.getByText('your tasks are on track')).toBeInTheDocument()

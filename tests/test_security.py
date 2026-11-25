@@ -446,13 +446,18 @@ def test_can_write_flag_reflects_the_viewer(client, world):
     assert listing["can_write"] is False and listing["owner_email"] == "alice@example.com"
 
 
-def test_task_list_only_includes_accessible_meetings(client, world):
+def test_task_list_only_includes_your_own_tasks(client, world, Session):
+    with Session() as db:
+        db.add(ActionItemDB(id="b1", meeting_id=world.mid, task="Bob's own task", assignee="bob@example.com",
+                            due_date=datetime(2030, 1, 6)))
+        db.commit()
     ids = lambda h: {a["id"] for a in client.get("/api/v1/actions", headers=h).json()["action_items"]}
-    assert ids(world.alice) == {"a1"} and ids(world.bob) == {"a1"}
+    assert ids(world.bob) == {"b1"}                  # only what is assigned to Bob (a1 is not his)
+    assert ids(world.alice) == set()                 # the owner does not see Bob's task in "my tasks"
     assert ids(world.carol) == set()
+    assert ids(world.admin) == set()                 # not even an administrator: it is a personal list
+    assert client.get("/api/v1/actions?mine=false", headers=world.alice).json()["total"] == 0   # others' cannot be requested
     assert client.get("/api/v1/actions", headers=world.carol).json()["total"] == 0
     assert client.get(f"/api/v1/actions?meeting_id={world.mid}", headers=world.carol).json()["total"] == 0
     bob_view = client.get("/api/v1/actions", headers=world.bob).json()["action_items"][0]
-    assert bob_view["can_write"] is False and bob_view["meeting_title"] == "Secret roadmap"
-    # admin sees the legacy meeting's tasks too (none here) and the owned ones
-    assert "a1" in ids(world.admin)
+    assert bob_view["can_write"] is False and bob_view["meeting_title"] == "Secret roadmap" and bob_view["mine"] is True

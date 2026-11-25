@@ -372,3 +372,17 @@ def test_a_reminder_cycle_creates_reminders_and_sends_requested_emails(world, ou
     assert main.run_reminder_cycle() >= 1
     assert any(s[0] == "r@example.com" and s[1] == "Due today: T" for s in outbox.sent)
     assert main.run_reminder_cycle() == 0                                          # nothing new the second time
+
+
+def test_starting_an_online_recording_notifies_registered_people_and_reports_the_rest(world):
+    r = world.client.post("/api/v1/recording-notice", headers=world.h["k"],
+                          json={"emails": ["r@example.com", "R@example.com", "k@example.com", "friend@gmail.com"]})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"notified": ["r@example.com"], "not_registered": ["friend@gmail.com"]}
+    assert titles(world, "r") == ["Krishna Panwala is recording your meeting"]
+    assert titles(world, "k") == []                      # you are not told about your own recording
+    assert titles(world, "x") == []
+
+
+def test_the_recording_notice_needs_a_signed_in_user(world):
+    assert world.client.post("/api/v1/recording-notice", json={"emails": ["r@example.com"]}).status_code in (401, 403)

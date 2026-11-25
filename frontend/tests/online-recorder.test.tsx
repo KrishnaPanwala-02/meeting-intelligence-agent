@@ -31,14 +31,21 @@ class FakeStream {
 }
 const levels = { tab: 0, mic: 0 }
 const analysers: { fftSize: number; kind: 'tab' | 'mic'; getByteTimeDomainData: (a: Uint8Array) => void }[] = []
-const connections: { from: string; to: string }[] = []
+const connections: { from: string; to: string; input?: number }[] = []
 const mixed = new FakeStream([new FakeTrack('audio')])
 class FakeCtx {
   destination = { name: 'speakers' }
   n = 0
   createMediaStreamSource(s: FakeStream) {
     const name = `source${this.n++}`
-    return { name, stream: s, connect: (to: { name?: string }) => connections.push({ from: name, to: to.name ?? 'analyser' }) }
+    return {
+      name, stream: s,
+      connect: (to: { name?: string }, _out?: number, input?: number) =>
+        connections.push({ from: name, to: to.name ?? 'analyser', ...(input === undefined ? {} : { input }) }),
+    }
+  }
+  createChannelMerger() {
+    return { name: 'merger', connect: (to: { name?: string }) => connections.push({ from: 'merger', to: to.name ?? 'analyser' }) }
   }
   createAnalyser() {
     const kind: 'tab' | 'mic' = analysers.length === 0 ? 'tab' : 'mic'
@@ -115,7 +122,7 @@ function setup(onUse = vi.fn()) {
 }
 
 async function startRecording(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('checkbox', { name: /Everyone in this meeting knows/ }))
+  await user.click(screen.getByRole('checkbox', { name: /I have told everyone in this meeting/ }))
   await user.click(screen.getByRole('button', { name: 'Start recording' }))
   await screen.findByRole('timer')
 }
@@ -178,7 +185,7 @@ describe('before recording', () => {
     expect(screen.getByRole('checkbox', { name: /Also record my microphone/ })).toBeChecked()
     const start = screen.getByRole('button', { name: 'Start recording' })
     expect(start).toBeDisabled()
-    await user.click(screen.getByRole('checkbox', { name: /Everyone in this meeting knows/ }))
+    await user.click(screen.getByRole('checkbox', { name: /I have told everyone in this meeting/ }))
     expect(start).toBeEnabled()
     expect(getDisplayMedia).not.toHaveBeenCalled()
   })
@@ -214,7 +221,7 @@ describe('checking that meeting audio is really being captured', () => {
     shared({ audio: false })
     const user = userEvent.setup()
     setup()
-    await user.click(screen.getByRole('checkbox', { name: /Everyone in this meeting knows/ }))
+    await user.click(screen.getByRole('checkbox', { name: /I have told everyone in this meeting/ }))
     await user.click(screen.getByRole('button', { name: 'Start recording' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/No audio was shared, so only your microphone would be recorded/)
     expect(screen.getByRole('alert')).toHaveTextContent(/Also share tab audio/)
@@ -228,7 +235,7 @@ describe('checking that meeting audio is really being captured', () => {
     getDisplayMedia.mockRejectedValue(new DOMException('no', 'NotAllowedError'))
     const user = userEvent.setup()
     setup()
-    await user.click(screen.getByRole('checkbox', { name: /Everyone in this meeting knows/ }))
+    await user.click(screen.getByRole('checkbox', { name: /I have told everyone in this meeting/ }))
     await user.click(screen.getByRole('button', { name: 'Start recording' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/cancelled or blocked/)
     expect(FakeRecorder.instances).toHaveLength(0)
@@ -248,14 +255,24 @@ describe('checking that meeting audio is really being captured', () => {
     await waitFor(() => expect(tab).toHaveAttribute('aria-valuenow', '0'))
   })
 
-  it('mixes the tab and the microphone into the recording and never plays the tab aloud again', async () => {
+  it('records the microphone and the tab on separate channels and never plays the tab aloud again', async () => {
     const user = userEvent.setup()
     setup()
     await startRecording(user)
-    const toRecording = connections.filter((c) => c.to === 'recording').map((c) => c.from)
-    expect(toRecording.sort()).toEqual(['source0', 'source1'])                         // tab and microphone
+    const toMerger = connections.filter((c) => c.to === 'merger')
+    expect(toMerger).toEqual([{ from: 'source0', to: 'merger', input: 1 }, { from: 'source1', to: 'merger', input: 0 }]) // tab right, microphone left
+    expect(connections.filter((c) => c.to === 'recording').map((c) => c.from)).toEqual(['merger'])
     expect(connections.some((c) => c.to === 'speakers')).toBe(false)                   // nothing is sent to the speakers (no echo)
     expect(analysers).toHaveLength(2)
+  })
+
+  it('without a microphone the tab plays on both channels as before', async () => {
+    const user = userEvent.setup()
+    setup()
+    await user.click(screen.getByRole('checkbox', { name: /Also record my microphone/ }))
+    await startRecording(user)
+    expect(connections.some((c) => c.to === 'merger')).toBe(false)
+    expect(connections.filter((c) => c.to === 'recording').map((c) => c.from)).toEqual(['source0'])
   })
 
   it('warns when no meeting audio is heard for a while, and clears the warning when it is', async () => {
@@ -289,7 +306,7 @@ describe('checking that meeting audio is really being captured', () => {
       shared({ surface })
       const user = userEvent.setup()
       const { unmount } = render(<ToastProvider><OnlineRecorder onUse={vi.fn()} /></ToastProvider>)
-      await user.click(screen.getByRole('checkbox', { name: /Everyone in this meeting knows/ }))
+      await user.click(screen.getByRole('checkbox', { name: /I have told everyone in this meeting/ }))
       await user.click(screen.getByRole('button', { name: 'Start recording' }))
       await screen.findByRole('timer')
       expect(screen.getByText(text)).toBeInTheDocument()
@@ -413,7 +430,7 @@ describe('finishing a recording', () => {
   it('leaving the page mid-recording stops everything', async () => {
     const user = userEvent.setup()
     const { unmount } = render(<ToastProvider><OnlineRecorder onUse={vi.fn()} /></ToastProvider>)
-    await user.click(screen.getByRole('checkbox', { name: /Everyone in this meeting knows/ }))
+    await user.click(screen.getByRole('checkbox', { name: /I have told everyone in this meeting/ }))
     await user.click(screen.getByRole('button', { name: 'Start recording' }))
     await screen.findByRole('timer')
     unmount()
@@ -499,5 +516,34 @@ describe('the Online meeting tab on the new-meeting page', () => {
     renderApp('/meetings/m1?tab=details')
     const row = (await screen.findByText('Recorded from')).closest('tr') as HTMLElement
     expect(within(row).getByText(/An online meeting \(browser tab audio, everyone’s consent confirmed/)).toBeInTheDocument()
+  })
+})
+
+describe('telling the people in the meeting', () => {
+  it('offers a message to paste into the meeting chat', () => {
+    setup()
+    expect(screen.getByText(/Heads-up: I am recording this meeting/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument()
+  })
+
+  it('notifies the chosen members when recording starts, and says who has no account', async () => {
+    const user = userEvent.setup()
+    const { calls } = mockServer({
+      'POST /api/v1/recording-notice': () => ({ notified: ['ann@example.com'], not_registered: ['friend@gmail.com'] }),
+    })
+    render(<ToastProvider><OnlineRecorder onUse={vi.fn()} members={[{ name: 'Ann', email: 'ann@example.com' }]} /></ToastProvider>)
+    await user.type(screen.getByLabelText(/Who is in this meeting/), 'ann@example.com{enter}friend@gmail.com{enter}')
+    await startRecording(user)
+    expect(await screen.findByText(/Notified: ann@example.com/)).toBeInTheDocument()
+    expect(screen.getByText(/No account here for friend@gmail.com/)).toBeInTheDocument()
+    expect(calls.find((c) => c.url.endsWith('/recording-notice'))?.body).toEqual({ emails: ['ann@example.com', 'friend@gmail.com'] })
+  })
+
+  it('sends nothing when nobody was listed', async () => {
+    const user = userEvent.setup()
+    const { calls } = mockServer({})
+    setup()
+    await startRecording(user)
+    expect(calls.some((c) => c.url.endsWith('/recording-notice'))).toBe(false)
   })
 })

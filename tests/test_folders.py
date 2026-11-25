@@ -481,3 +481,27 @@ def test_ask_refuses_both_scopes_and_other_peoples_folders(world):
     assert world.client.post("/api/v1/ask", headers=world.h["k"], json={**q, "folder_id": mine, "meeting_id": m}).status_code == 422
     assert world.client.post("/api/v1/ask", headers=world.h["k"], json={**q, "folder_id": theirs}).status_code == 404
     assert world.client.get(f"/api/v1/ask/history?folder_id={theirs}", headers=world.h["k"]).status_code == 404
+
+
+# ------------------------------------------------------------------ renaming a meeting
+
+def test_a_meeting_can_be_renamed_whatever_its_status(world):
+    with world.Session() as db:
+        done = mk(db, "old name", status="completed", summary="Kept")
+    r = world.client.patch(f"/api/v1/meetings/{done}/title", json={"title": "  New   name  "}, headers=world.h["k"])
+    assert r.status_code == 200 and r.json()["title"] == "New name"
+    with world.Session() as db:
+        assert db.get(Meeting, done).title == "New name"
+        assert db.query(Summary).filter(Summary.meeting_id == done).one().executive_summary == "Kept"   # nothing else changed
+
+
+def test_renaming_is_checked_and_limited_to_people_who_may_edit(world):
+    with world.Session() as db:
+        mid = mk(db, "keep", participants=["r@example.com"])
+    url = f"/api/v1/meetings/{mid}/title"
+    assert world.client.patch(url, json={"title": "   "}, headers=world.h["k"]).status_code == 422
+    assert world.client.patch(url, json={"title": "x" * 201}, headers=world.h["k"]).status_code == 422
+    assert world.client.patch(url, json={"title": "Hacked"}, headers=world.h["r"]).status_code == 403   # a participant may only read
+    assert world.client.patch(url, json={"title": "Hacked"}).status_code == 401
+    with world.Session() as db:
+        assert db.get(Meeting, mid).title == "keep"

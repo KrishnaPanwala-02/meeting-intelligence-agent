@@ -129,10 +129,27 @@ export function hasEnded(
   return end.getTime() <= now.getTime()
 }
 
+const SOURCE_BADGE: Record<string, { label: string; title: string }> = {
+  upload: { label: 'Uploaded file', title: 'The audio was uploaded from a file' },
+  online_tab: { label: 'Online meeting', title: 'Recorded from a Google Meet, Zoom or Teams browser tab' },
+  browser_mic: { label: 'Recorded in app', title: 'Recorded with the microphone in this website' },
+}
+
+export function SourceBadge({ source }: { source?: string | null }) {
+  const info = source ? SOURCE_BADGE[source] : undefined
+  if (!info) return null
+  return (
+    <span title={info.title}>
+      <Badge tone="neutral">{info.label}</Badge>
+    </span>
+  )
+}
+
 export function MeetingBadges({ m }: { m: Meeting }) {
   return (
     <span className="row wrap" style={{ gap: '0.35rem' }}>
       {hasEnded(m) ? <Badge tone="warn">ended</Badge> : <MeetingStatusBadge status={m.status} />}
+      <SourceBadge source={m.source} />
       {m.folder && <FolderBadge folder={m.folder} />}
       {m.is_owner === false && <Badge tone="info">Shared by {m.owner_name || m.owner_email || 'someone'}</Badge>}
       {m.has_audio && !m.has_transcript && m.status === 'uploaded' && <Badge tone="warn">not processed</Badge>}

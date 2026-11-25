@@ -132,6 +132,30 @@ def notify_people(db: Session, meeting: Meeting, users: Iterable[User], kind: st
     return _safely(db, kind, run)
 
 
+def notify_recording(db: Session, actor: User, emails: Iterable[str]) -> dict:
+    """
+    Tell registered people that `actor` has started recording an online meeting they are in.
+    Returns {"notified": [...], "not_registered": [...]} so the recorder knows who still needs telling
+    (people without an account here, e.g. someone on Google Meet, can only be told in the meeting itself).
+    """
+    wanted = {e.strip().lower() for e in emails if e and e.strip()}
+    wanted.discard(actor.email.lower())
+    users = (db.query(User).filter(User.email.in_(list(wanted)), User.is_active.is_(True)).all() if wanted else [])
+    who = _who(actor)
+
+    def run() -> int:
+        stamp = datetime.utcnow().strftime("%Y%m%d%H%M")
+        return sum(int(notify(db, u, "recording_started", f"{who} is recording your meeting",
+                              f"{who} started recording an online meeting you are in. The audio will be "
+                              "transcribed and summarised on their computer. Tell them in the meeting if you "
+                              "do not agree.", None, None, dedupe_key=f"rec:{actor.id}:{stamp}") is not None)
+                   for u in users)
+
+    _safely(db, "recording", run)
+    found = {u.email.lower() for u in users}
+    return {"notified": sorted(found), "not_registered": sorted(wanted - found)}
+
+
 # ---------------------------------------------------------------------------
 # Reading and marking
 # ---------------------------------------------------------------------------

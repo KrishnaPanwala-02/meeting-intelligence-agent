@@ -1146,6 +1146,32 @@ async def update_meeting(
     return _meeting_to_dict(meeting, user)
 
 
+class MeetingRename(BaseModel):
+    title: str = Field(..., max_length=500)
+
+
+@api.patch("/api/v1/meetings/{meeting_id}/title")
+async def rename_meeting(
+    meeting_id: str,
+    body: MeetingRename,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change a meeting's name (any meeting, whatever its status). Nothing else about it changes."""
+    meeting = _get_meeting_or_404(db, meeting_id, user, write=True)
+    title = " ".join(body.title.split())
+    if not title:
+        raise HTTPException(status_code=422, detail="Give the meeting a name")
+    if len(title) > 200:
+        raise HTTPException(status_code=422, detail="A meeting name can be at most 200 characters")
+    if any(not ch.isprintable() for ch in title):
+        raise HTTPException(status_code=422, detail="The meeting name contains invalid characters")
+    meeting.title = title
+    db.commit()
+    db.refresh(meeting)
+    return _meeting_to_dict(meeting, user)
+
+
 @api.post("/api/v1/meetings/{meeting_id}/cancel")
 async def cancel_meeting(
     meeting_id: str,
@@ -1411,9 +1437,11 @@ async def list_all_actions(
     db: Session = Depends(get_db),
 ):
     """
-    Action items across every meeting you can access (the "my tasks" view).
+    Your own tasks across the meetings you can access (the "my tasks" view). Tasks assigned to other
+    people are never returned here, whatever the filters, so nobody sees another person's work; the
+    `mine` parameter is accepted for older clients but changes nothing.
     Filters: status (comma-separated), assignee (substring), meeting_id,
-    due_from/due_to (YYYY-MM-DD, inclusive), has_due_date.
+    due_from/due_to (YYYY-MM-DD, inclusive), has_due_date, needs_review.
     """
     try:
         lo = internal_calendar.parse_bound(due_from, end=False)
@@ -1453,17 +1481,12 @@ async def list_all_actions(
         query = query.order_by(ActionItemDB.due_date.is_(None),
                                ActionItemDB.due_date, ActionItemDB.id)
     ctx = assignments.Context(db, user)
-    if mine is None:
-        total = query.count()
-        rows = query.offset(offset).limit(limit).all()
-    else:
-        # Ownership is decided in Python (names), so filter before paging.
-        candidates = query.all()
-        ctx.preload(candidates)
-        every = [r for r in candidates
-                 if ctx.view(accessible[r.meeting_id], r)["mine"] == mine]
-        total = len(every)
-        rows = every[offset:offset + limit]
+    # Ownership is decided in Python (names), so keep only the user's own tasks before paging.
+    candidates = query.all()
+    ctx.preload(candidates)
+    every = [r for r in candidates if ctx.view(accessible[r.meeting_id], r)["mine"]]
+    total = len(every)
+    rows = every[offset:offset + limit]
     ctx.preload(rows)
     return {
         "count": len(rows),
@@ -1640,6 +1663,20 @@ async def list_people(
     """Members that can be picked when naming a speaker (their name and sign-in e-mail)."""
     people = voices.people_directory(db)
     return {"count": len(people), "people": people}
+
+
+class RecordingNotice(BaseModel):
+    emails: List[str] = Field(default_factory=list, max_length=100)
+
+
+@api.post("/api/v1/recording-notice")
+async def recording_notice(
+    body: RecordingNotice,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Tell registered people in an online meeting that you have started recording it."""
+    return notifications.notify_recording(db, user, body.emails)
 
 
 def _known_names(db: Session, meeting: Meeting, user: User) -> List[str]:

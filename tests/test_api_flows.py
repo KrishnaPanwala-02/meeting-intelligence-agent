@@ -470,29 +470,30 @@ def seed_actions(env):
     s.add(Meeting(id="m2", title="Beta", owner_email="tester@example.com"))
     d = lambda day: datetime(2026, 11, day)
     s.add_all([
-        ActionItemDB(id="a1", meeting_id="m1", task="Write report", assignee="Speaker 1", due_date=d(20), status="pending"),
-        ActionItemDB(id="a2", meeting_id="m1", task="Book room", assignee="Ann", due_date=d(5), status="completed"),
-        ActionItemDB(id="a3", meeting_id="m2", task="Review budget", assignee="Speaker 1", due_date=None, status="in_progress"),
+        ActionItemDB(id="a1", meeting_id="m1", task="Write report", assignee="tester@example.com", due_date=d(20), status="pending"),
+        ActionItemDB(id="a2", meeting_id="m1", task="Book room", assignee="tester@example.com", due_date=d(5), status="completed"),
+        ActionItemDB(id="a3", meeting_id="m2", task="Review budget", assignee="tester@example.com", due_date=None, status="in_progress"),
         ActionItemDB(id="a4", meeting_id="m2", task="Send invites", assignee="Bob", due_date=d(10), status="pending"),
     ])
     s.commit(); s.close()
 
 
 def test_actions_list_across_meetings_with_filters(env):
-    seed_actions(env)
+    seed_actions(env)                                       # a4 belongs to Bob, so it never appears
     get = lambda q="": env.client.get(f"/api/v1/actions{q}").json()
     allv = get()
-    assert allv["total"] == 4 and [a["id"] for a in allv["action_items"]] == ["a2", "a4", "a1", "a3"]  # due asc, undated last
+    assert allv["total"] == 3 and [a["id"] for a in allv["action_items"]] == ["a2", "a1", "a3"]  # due asc, undated last
     first = allv["action_items"][0]
     assert first["meeting_title"] == "Alpha" and first["can_write"] is True and first["meeting_id"] == "m1"
-    assert {a["id"] for a in get("?status=pending,in_progress")["action_items"]} == {"a1", "a3", "a4"}
-    assert [a["id"] for a in get("?assignee=speaker")["action_items"]] == ["a1", "a3"]
-    assert [a["id"] for a in get("?meeting_id=m2")["action_items"]] == ["a4", "a3"]
-    assert [a["id"] for a in get("?due_from=2026-11-06&due_to=2026-11-20")["action_items"]] == ["a4", "a1"]
+    assert {a["id"] for a in get("?status=pending,in_progress")["action_items"]} == {"a1", "a3"}
+    assert [a["id"] for a in get("?assignee=tester")["action_items"]] == ["a2", "a1", "a3"]
+    assert [a["id"] for a in get("?assignee=bob")["action_items"]] == []
+    assert [a["id"] for a in get("?meeting_id=m2")["action_items"]] == ["a3"]
+    assert [a["id"] for a in get("?due_from=2026-11-06&due_to=2026-11-20")["action_items"]] == ["a1"]
     assert [a["id"] for a in get("?has_due_date=false")["action_items"]] == ["a3"]
-    assert get("?has_due_date=true")["total"] == 3
-    assert get("?limit=2&offset=1")["count"] == 2 and get("?limit=2")["total"] == 4
-    assert get("?sort=created")["total"] == 4
+    assert get("?has_due_date=true")["total"] == 2
+    assert get("?limit=2&offset=1")["count"] == 2 and get("?limit=2")["total"] == 3
+    assert get("?sort=created")["total"] == 3
     assert get("?meeting_id=ghost") == {"count": 0, "total": 0, "action_items": []}
 
 

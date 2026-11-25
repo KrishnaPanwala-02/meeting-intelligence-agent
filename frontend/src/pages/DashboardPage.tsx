@@ -40,11 +40,11 @@ export default function DashboardPage() {
 
   const [sort, setSort] = useState<SortKey>('due')
   const [priority, setPriority] = useState<PriorityFilter>('all')
-  // Tasks assigned to you first, in the chosen order; then everyone else's.
-  const openTasks = useMemo(() => {
-    const sorted = sortTasks(filterPriority(data.data?.open.action_items ?? [], priority), sort)
-    return [...sorted.filter((t) => t.mine), ...sorted.filter((t) => !t.mine)]
-  }, [data.data, sort, priority])
+  // Only your own tasks, in the chosen order (the server never sends anyone else's).
+  const openTasks = useMemo(
+    () => sortTasks(filterPriority((data.data?.open.action_items ?? []).filter((t) => t.mine), priority), sort),
+    [data.data, sort, priority],
+  )
 
   // Tasks the signed-in person may fix whose deadline was too vague to become a date.
   const toReview = (data.data?.open.action_items ?? []).filter((t) => t.needs_review && t.can_write).length
@@ -108,11 +108,7 @@ export default function DashboardPage() {
               <Card className="stat">
                 <div className="label">Assigned to you</div>
                 <div className="value">{data.data.mine.total}</div>
-                <div className="hint">
-                  {data.data.open.total > data.data.mine.total
-                    ? `of ${data.data.open.total} open in your meetings`
-                    : 'open tasks'}
-                </div>
+                <div className="hint">open tasks</div>
               </Card>
               <Card className={`stat ${data.data.overdue.total > 0 ? 'is-late' : ''}`}>
                 <div className="label">Overdue</div>

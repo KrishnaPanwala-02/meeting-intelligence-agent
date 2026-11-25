@@ -464,3 +464,35 @@ describe('asking a whole folder', () => {
     await waitFor(() => expect(calls.some((c) => c.url.includes('folder_id=f2'))).toBe(true))
   })
 })
+
+describe('renaming a meeting', () => {
+  it('sends the new name from the meetings list and refreshes', async () => {
+    const { default: Dialog } = await import('../src/components/RenameMeetingDialog')
+    const { ToastProvider } = await import('../src/components/ui')
+    const { render, screen } = await import('@testing-library/react')
+    const userEvent = (await import('@testing-library/user-event')).default
+    const user = userEvent.setup()
+    const onSaved = vi.fn()
+    const { calls } = mockServer({ 'PATCH /api/v1/meetings/m1/title': () => ({ id: 'm1', title: 'Better name' }) })
+    render(<ToastProvider><Dialog meetingId="m1" title="old" onClose={() => undefined} onSaved={onSaved} /></ToastProvider>)
+    const box = screen.getByLabelText('Meeting name')
+    await user.clear(box)
+    await user.type(box, '  Better   name ')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith('Better name'))
+    expect(calls[0].body).toEqual({ title: 'Better name' })
+  })
+
+  it('will not save an empty name', async () => {
+    const { default: Dialog } = await import('../src/components/RenameMeetingDialog')
+    const { ToastProvider } = await import('../src/components/ui')
+    const { render, screen } = await import('@testing-library/react')
+    const userEvent = (await import('@testing-library/user-event')).default
+    const user = userEvent.setup()
+    const { fn } = mockServer({})
+    render(<ToastProvider><Dialog meetingId="m1" title="old" onClose={() => undefined} onSaved={() => undefined} /></ToastProvider>)
+    await user.clear(screen.getByLabelText('Meeting name'))
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(fn).not.toHaveBeenCalled()
+  })
+})

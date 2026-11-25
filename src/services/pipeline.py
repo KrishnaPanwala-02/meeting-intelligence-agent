@@ -161,12 +161,18 @@ def transcribe_step(
     """Transcribe an audio file and save the transcript. Returns (row, result)."""
     transcriber = transcriber or get_transcriber()
     known = voices.known_voice_samples(db, meeting) if identify_speakers else None
+    # An online meeting recorded from a browser tab keeps your microphone and the other people apart.
+    online = identify_speakers and meeting.source == "online_tab"
+    extra = {"known_voices": known} if known else {}
+    if online:
+        owner = voices.owner_user(db, meeting)
+        extra.update(online=True, local_name=(owner.name or "").strip() or None if owner else None)
     try:
         result = transcriber.transcribe(
             audio_path=audio_path,
             language=language,
             identify_speakers=identify_speakers,
-            **({"known_voices": known} if known else {}),
+            **extra,
         )
     except (TranscriptionUnavailableError, DiarizationUnavailableError) as exc:
         raise PipelineError(str(exc), 503)
@@ -176,7 +182,7 @@ def transcribe_step(
     segments = [segment.dict() for segment in result.segments]
     # Voices already named in earlier meetings keep their names.
     segments, speaker_voices = voices.apply_known_voices(
-        db, meeting, segments, result.speaker_voices
+        db, meeting, segments, result.speaker_voices, strict=online
     )
     transcript = Transcript(
         id=str(uuid.uuid4()),

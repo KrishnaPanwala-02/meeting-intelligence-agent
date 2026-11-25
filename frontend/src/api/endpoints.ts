@@ -129,6 +129,8 @@ export const meetingsApi = {
     request<ScheduleResult>(`${V1}/meetings/schedule`, { method: 'POST', json: body }),
   update: (id: string, body: Partial<ScheduleBody>) =>
     request<Meeting>(`${V1}/meetings/${id}`, { method: 'PUT', json: body }),
+  rename: (id: string, title: string) =>
+    request<Meeting>(`${V1}/meetings/${id}/title`, { method: 'PATCH', json: { title } }),
   moveToFolder: (id: string, choice: FolderChoice) =>
     request<Meeting>(`${V1}/meetings/${id}/folder`, { method: 'PUT', json: choice }),
   cancel: (id: string, scope: 'this' | 'following' = 'this') =>
@@ -241,6 +243,12 @@ export const foldersApi = {
 
 export const peopleApi = {
   list: () => request<{ count: number; people: Person[] }>(`${V1}/people`),
+}
+
+export const recordingApi = {
+  /** Tell registered people in an online meeting that recording has started. */
+  notify: (emails: string[]) =>
+    request<{ notified: string[]; not_registered: string[] }>(`${V1}/recording-notice`, { method: 'POST', json: { emails } }),
 }
 
 export const voicesApi = {

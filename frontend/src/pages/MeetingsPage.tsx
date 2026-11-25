@@ -3,7 +3,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { foldersApi, meetingsApi } from '../api/endpoints'
 import type { Meeting } from '../api/types'
 import { MeetingBadges, meetingWhen } from '../components/domain'
-import { IconMic, IconPlus, IconTrash } from '../components/icons'
+import { IconEdit, IconMic, IconPlus, IconTrash } from '../components/icons'
+import RenameMeetingDialog from '../components/RenameMeetingDialog'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorBanner, LinkButton, Loading, useToast } from '../components/ui'
 import { plural } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
@@ -27,6 +28,7 @@ export default function MeetingsPage() {
   const [limit, setLimit] = useState(PAGE)
   const toast = useToast()
   const [toDelete, setToDelete] = useState<Meeting | null>(null)
+  const [toRename, setToRename] = useState<Meeting | null>(null)
   const [deleting, setDeleting] = useState(false)
 
   const folders = useAsync(() => foldersApi.list().catch(() => ({ count: 0, folders: [] })), [])
@@ -160,9 +162,14 @@ export default function MeetingsPage() {
                       </td>
                       <td onClick={(e) => e.stopPropagation()}>
                         {m.can_write && (
-                          <Button variant="ghost" size="sm" aria-label={`Delete ${m.title}`} title="Delete meeting" onClick={() => setToDelete(m)}>
-                            <IconTrash />
-                          </Button>
+                          <span className="row" style={{ gap: '0.2rem', flexWrap: 'nowrap' }}>
+                            <Button variant="ghost" size="sm" aria-label={`Rename ${m.title}`} title="Rename meeting" onClick={() => setToRename(m)}>
+                              <IconEdit />
+                            </Button>
+                            <Button variant="ghost" size="sm" aria-label={`Delete ${m.title}`} title="Delete meeting" onClick={() => setToDelete(m)}>
+                              <IconTrash />
+                            </Button>
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -183,6 +190,18 @@ export default function MeetingsPage() {
           </>
         )}
       </Card>
+
+      {toRename && (
+        <RenameMeetingDialog
+          meetingId={toRename.id}
+          title={toRename.title}
+          onClose={() => setToRename(null)}
+          onSaved={() => {
+            setToRename(null)
+            list.reload()
+          }}
+        />
+      )}
 
       {toDelete && (
         <ConfirmDialog

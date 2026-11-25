@@ -26,6 +26,9 @@ from ..models.database import (ActionItemDB, Meeting, Summary, Transcript,
 
 MAX_NAME_LENGTH = 100
 MAX_SAMPLES = 5                      # embeddings kept per person
+# Online meetings: a voice is only named when its best match beats the runner-up by this much.
+ONLINE_MARGIN = 0.08
+
 DEFAULT_LABEL = re.compile(r"^Speaker \d+$")
 
 
@@ -90,18 +93,23 @@ def match_speakers(
     profiles: List[VoiceProfile],
     speaker_voices: Dict[str, List[float]],
     min_score: Optional[float] = None,
+    margin: float = 0.0,
 ) -> Dict[str, str]:
     """
     {speaker label: person name}. Best pairs first; each person and each
     speaker is used at most once, so two voices never get the same name.
+    With a margin, a voice is only named when its best match beats the runner-up by that much: when two
+    people fit about equally well it stays unnamed rather than guessing.
     """
     min_score = threshold() if min_score is None else min_score
     pairs = []
     for label, emb in (speaker_voices or {}).items():
-        for profile in profiles:
-            s = score(profile, emb)
+        scored = sorted(((score(p, emb), p.display_name) for p in profiles), reverse=True)
+        if margin and len(scored) > 1 and scored[0][0] - scored[1][0] < margin:
+            continue
+        for s, name in scored:
             if s >= min_score:
-                pairs.append((s, label, profile.display_name))
+                pairs.append((s, label, name))
     result: Dict[str, str] = {}
     used_names = set()
     for _, label, name in sorted(pairs, key=lambda p: -p[0]):
@@ -222,7 +230,7 @@ def known_voice_samples(db: Session, meeting: Meeting) -> Dict[str, List[List[fl
 
 
 def apply_known_voices(db: Session, meeting: Meeting, segments: List[Dict[str, Any]],
-                       speaker_voices: Optional[Dict[str, List[float]]]):
+                       speaker_voices: Optional[Dict[str, List[float]]], strict: bool = False):
     """
     Replace "Speaker N" with the names of recognised voices. Returns
     (segments, speaker_voices) with labels updated; unchanged if nothing matched.
@@ -236,7 +244,8 @@ def apply_known_voices(db: Session, meeting: Meeting, segments: List[Dict[str, A
     already = {seg.get("speaker") for seg in segments if seg.get("speaker") and not DEFAULT_LABEL.match(seg["speaker"])}
     unnamed = {k: v for k, v in speaker_voices.items() if DEFAULT_LABEL.match(k)}
     taken = {n.lower() for n in already}
-    names = {k: n for k, n in match_speakers([p for p in profiles if p.display_name.lower() not in taken], unnamed).items()}
+    names = match_speakers([p for p in profiles if p.display_name.lower() not in taken], unnamed,
+                           margin=ONLINE_MARGIN if strict else 0.0)
     if not names and not already:
         return segments, speaker_voices
     # Recognised people with a saved e-mail get access to the meeting automatically.

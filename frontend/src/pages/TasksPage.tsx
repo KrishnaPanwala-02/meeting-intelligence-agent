@@ -11,7 +11,6 @@ import { useAsync } from '../lib/useAsync'
 
 type StatusFilter = 'open' | 'done' | 'all'
 type DueFilter = 'all' | 'overdue' | 'week' | 'nodate'
-type Scope = 'everyone' | 'mine'
 interface Group {
   key: string
   title?: string
@@ -39,7 +38,6 @@ export default function TasksPage() {
   const [status, setStatus] = useState<StatusFilter>('open')
   const [due, setDue] = useState<DueFilter>('all')
   const [text, setText] = useState('')
-  const [scope, setScope] = useState<Scope>('everyone')
   const [sort, setSort] = useState<SortKey>('due')
   const [priority, setPriority] = useState<PriorityFilter>('all')
 
@@ -56,7 +54,8 @@ export default function TasksPage() {
 
   const sections = useMemo(() => {
     const q = text.trim().toLowerCase()
-    const rows = filterPriority(list.data?.action_items ?? [], priority).filter((t) => {
+    // The server only sends your own tasks; this is a second guard so nobody else's can ever be listed.
+    const rows = filterPriority((list.data?.action_items ?? []).filter((t) => t.mine), priority).filter((t) => {
       if (!q) return true
       return (
         t.task.toLowerCase().includes(q) ||
@@ -85,15 +84,10 @@ export default function TasksPage() {
         rows: sortTasks(g[b], 'due'),
       }))
     }
-    const mine = build(rows.filter((t) => t.mine))
-    const others = scope === 'mine' ? [] : build(rows.filter((t) => !t.mine))
-    return { mine, others }
-  }, [list.data, text, due, scope, sort, priority])
+    return build(rows)
+  }, [list.data, text, due, sort, priority])
 
-  const count = (g: { rows: TaskRow[] }[]) => g.reduce((n, x) => n + x.rows.length, 0)
-  const mineCount = count(sections.mine)
-  const othersCount = count(sections.others)
-  const total = mineCount + othersCount
+  const total = sections.reduce((n, g) => n + g.rows.length, 0)
 
   const renderGroups = (groups: Group[]) =>
     groups.map(({ key, title, overdue, rows }) => (
@@ -114,7 +108,7 @@ export default function TasksPage() {
       <div className="page-head">
         <div>
           <h1>My tasks</h1>
-          <p>Tasks assigned to you come first, then the rest of your meetings’ tasks. Only the person a task is assigned to can tick it.</p>
+          <p>Only the tasks assigned to you. Other people’s tasks are never shown here.</p>
         </div>
         <Button onClick={() => void exportDeadlines()}>
           <IconDownload /> My deadlines (.ics)
@@ -153,13 +147,6 @@ export default function TasksPage() {
               </button>
             ))}
           </div>
-          <div className="seg-control" role="group" aria-label="Whose tasks">
-            {(['everyone', 'mine'] as Scope[]).map((s) => (
-              <button key={s} aria-pressed={scope === s} onClick={() => setScope(s)}>
-                {s === 'everyone' ? 'Everyone' : 'Only mine'}
-              </button>
-            ))}
-          </div>
           <select className="input" style={{ maxWidth: 190 }} aria-label="Sort by" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
             {(Object.keys(SORT_LABEL) as SortKey[]).map((k) => (
               <option key={k} value={k}>
@@ -193,29 +180,16 @@ export default function TasksPage() {
         ) : total === 0 ? (
           <EmptyState icon={<IconCheck />} title={status === 'open' && !text && due === 'all' ? 'You are all caught up' : 'No matching tasks'}>
             {status === 'open' && !text && due === 'all'
-              ? 'New action items appear here after a meeting is processed.'
+              ? 'Tasks assigned to you appear here after a meeting is processed.'
               : 'Try changing the filters.'}
           </EmptyState>
         ) : (
-          <>
-            <div className="group-title section" role="heading" aria-level={2}>
-              Assigned to me <span className="muted">· {mineCount}</span>
-            </div>
-            {mineCount === 0 ? <p className="muted small" style={{ padding: '0 1.1rem 0.8rem', margin: 0 }}>Nothing assigned to you here.</p> : renderGroups(sections.mine)}
-            {scope === 'everyone' && othersCount > 0 && (
-              <>
-                <div className="group-title section" role="heading" aria-level={2}>
-                  Assigned to others <span className="muted">· {othersCount}</span>
-                </div>
-                {renderGroups(sections.others)}
-              </>
-            )}
-          </>
+          <>{renderGroups(sections)}</>
         )}
       </Card>
       {list.data && list.data.total > list.data.count && (
         <p className="muted small" style={{ marginTop: '0.8rem' }}>
-          Showing the first {list.data.count} of {list.data.total} tasks. Narrow the filters to see others.
+          Showing the first {list.data.count} of {list.data.total} tasks. Narrow the filters to see the rest.
         </p>
       )}
     </>

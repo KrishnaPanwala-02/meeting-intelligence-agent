@@ -164,7 +164,7 @@ function UploadForm({ initialFolder }: { initialFolder: string | null }) {
             {source === 'record' ? (
               <Recorder onUse={(f) => useRecording(f)} />
             ) : source === 'online' ? (
-              <OnlineRecorder onUse={(f, info) => useRecording(f, info)} />
+              <OnlineRecorder members={members} onUse={(f, info) => useRecording(f, info)} />
             ) : (
             <div
               className={`drop ${over ? 'over' : ''} ${file ? 'has-file' : ''}`}

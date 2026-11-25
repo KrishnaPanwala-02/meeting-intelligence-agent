@@ -169,8 +169,8 @@ def test_flags_are_per_viewer(world):
     assert r["Complete model training"] == (False, False)
 
     allrows = world.client.get("/api/v1/actions", headers=world.h["r"]).json()["action_items"]
-    assert {a["task"] for a in allrows if a["mine"]} == {"Prepare project report", "Send invites"}
-    assert all(a["can_update_status"] == a["mine"] for a in allrows)
+    assert {a["task"] for a in allrows} == {"Prepare project report", "Send invites"}      # only r's own
+    assert all(a["mine"] and a["can_update_status"] for a in allrows)
     assert all("can_write" in a and a["can_write"] is False for a in allrows)
 
 
@@ -243,10 +243,11 @@ def test_tasks_can_be_filtered_to_the_ones_assigned_to_me(world):
     mine = get("r", mine="true")
     assert {a["task"] for a in mine["action_items"]} == {"Prepare project report", "Send invites"}
     assert mine["total"] == 2 and all(a["mine"] for a in mine["action_items"])
-    others = get("r", mine="false")
-    assert others["total"] == 3 and not any(a["mine"] for a in others["action_items"])
-    assert get("r")["total"] == 5                                    # no filter: everything
-    assert get("k", mine="true")["total"] == 1
+    for q in ({}, {"mine": "false"}):                                # others' tasks can never be requested
+        got = get("r", **q)
+        assert got["total"] == 2 and all(a["mine"] for a in got["action_items"])
+    assert get("k")["total"] == 1
+    assert get("x")["total"] == 0
 
 
 def test_mine_filter_pages_and_combines_with_status(world):
@@ -285,6 +286,7 @@ def test_owner_without_a_name_has_no_owner_name(world):
 def test_tasks_with_an_unclear_deadline_are_flagged_until_a_date_is_chosen(world):
     with world.Session() as db:
         t = db.get(ActionItemDB, world.ids["tbd"])
+        t.assignee = "Krishna Panwala"                  # a personal list only shows the person's own tasks
         t.due_phrase = "soon"
         t.due_date = None
         db.commit()
@@ -293,7 +295,7 @@ def test_tasks_with_an_unclear_deadline_are_flagged_until_a_date_is_chosen(world
     assert row("k")["due_phrase"] == "soon" and row("k")["needs_review"] is True
     flagged = c.get("/api/v1/actions", params={"needs_review": "true"}, headers=world.h["k"]).json()
     assert [a["task"] for a in flagged["action_items"]] == ["Book a room"] and flagged["action_items"][0]["can_write"] is True
-    assert c.get("/api/v1/actions", params={"needs_review": "true"}, headers=world.h["r"]).json()["total"] == 1   # readers see it
+    assert c.get("/api/v1/actions", params={"needs_review": "true"}, headers=world.h["r"]).json()["total"] == 0   # not r's task
     # ticking it off does not clear the note, but a finished task no longer needs review
     c.patch(f"/api/v1/meetings/{world.mid}/actions/{world.ids['tbd']}", params={"status": "completed"}, headers=world.h["k"])
     assert c.get("/api/v1/actions", params={"needs_review": "true"}, headers=world.h["k"]).json()["total"] == 0

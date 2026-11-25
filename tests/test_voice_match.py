@@ -369,3 +369,102 @@ def test_turn_matching_names_people_the_diarizer_merged():
     out, voices_ = t._name_turns(SimpleNamespace(_audio=Audio(), _embedding=Embed()), "x.wav", turns,
                                  {"SPEAKER_00": [0.0] * 16}, known)
     assert [l.replace("known:", "") for _, _, l in out] == spoken
+
+
+# ------------------------------------------------------------ online meetings: do not force a name
+
+def _person(name, vec):
+    from types import SimpleNamespace
+    return SimpleNamespace(display_name=name, embeddings=[vec])
+
+
+def test_a_voice_between_two_people_stays_unnamed_when_a_margin_is_asked_for():
+    a, b = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
+    between = [0.7, 0.7, 0.1]                        # blended: fits both about equally
+    people = [_person("Ann", a), _person("Bob", b)]
+    assert voices.match_speakers(people, {"Speaker 1": between}, min_score=0.5) != {}                 # guessed before
+    assert voices.match_speakers(people, {"Speaker 1": between}, min_score=0.5, margin=0.08) == {}    # now left unnamed
+    assert voices.match_speakers(people, {"Speaker 1": [0.9, 0.1, 0.0]}, min_score=0.5, margin=0.08) == {"Speaker 1": "Ann"}
+
+
+def _stereo(tmp_path, left, right, name="call.wav"):
+    import numpy as np, soundfile as sf
+    path = str(tmp_path / name)
+    sf.write(path, np.stack([left, right], 1).astype("float32"), 16000)
+    return path
+
+
+def _speech(seconds, seed):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(seconds * 16000)) / 16000
+    return (0.3 * np.sin(2 * np.pi * (140 + 20 * seed) * t) * (0.6 + 0.4 * np.sin(2 * np.pi * 3 * t)) + rng.normal(0, 0.01, len(t))).astype("float32")
+
+
+def test_you_are_found_by_the_microphone_channel_and_the_tab_leaking_into_it_does_not_count(tmp_path):
+    import numpy as np
+    from src.agent.transcriber import MeetingTranscriber, LOCAL
+    quiet = np.zeros(int(2 * 16000), dtype="float32")
+    mine, theirs = _speech(2, 1), _speech(2, 2)
+    left = np.concatenate([mine, theirs * 0.1, quiet])             # my voice, then the other person leaking into my mic
+    right = np.concatenate([np.zeros_like(mine), theirs, quiet])
+    path = _stereo(tmp_path, left, right)
+    t = MeetingTranscriber.__new__(MeetingTranscriber)
+    with t._channel_files(path) as pair:
+        assert pair is not None
+        turns = t._local_turns(*pair)
+    assert [x[2] for x in turns] == [LOCAL]
+    assert turns[0][0] < 0.3 and 1.7 < turns[0][1] < 2.4            # only the first two seconds are "me"
+
+
+def test_identical_channels_are_not_split(tmp_path):
+    from src.agent.transcriber import MeetingTranscriber
+    both = _speech(3, 1)
+    path = _stereo(tmp_path, both, both)
+    t = MeetingTranscriber.__new__(MeetingTranscriber)
+    with t._channel_files(path) as pair:
+        assert pair is None                                          # an old or microphone-less recording: analysed as before
+
+
+def test_your_name_is_only_used_when_your_microphone_voice_does_not_contradict_it(tmp_path, monkeypatch):
+    import numpy as np
+    from types import SimpleNamespace
+    from src.agent import transcriber as tr
+    quiet = np.zeros(int(1 * 16000), dtype="float32")
+    mine = _speech(3, 1)
+    path = _stereo(tmp_path, np.concatenate([mine, quiet]), np.concatenate([np.zeros_like(mine), quiet]))
+    t = tr.MeetingTranscriber.__new__(tr.MeetingTranscriber)
+    monkeypatch.setattr(t, "_diarize_file", lambda p, known=None, online=False: ([(0.0, 1.0, "SPEAKER_00")], {"SPEAKER_00": [0.0, 1.0]}))
+    monkeypatch.setattr(t, "_load_diarization_pipeline", lambda: SimpleNamespace())
+    for saved, expected in (([[1.0, 0.0]], None), ([[0.0, 1.0]], "Rahul Patel"), ([], "Rahul Patel")):
+        monkeypatch.setattr(t, "_local_voice", lambda pipeline, left, turns: [0.0, 1.0])
+        turns, voices_ = t._diarize_online(path, {"Rahul Patel": saved} if saved else {}, "Rahul Patel")
+        assert t.last_local_label == expected, saved
+        assert any(x[2] == tr.LOCAL for x in turns) and tr.LOCAL in voices_
+
+
+def test_only_online_recordings_get_the_channel_options_and_a_cautious_naming(world, monkeypatch):
+    """The recorder's name and the online flag are sent for a tab recording; an upload is analysed exactly as before."""
+    from src.services import pipeline
+    from tests.test_voices import VoiceTranscriber
+    seen = {}
+
+    class Spy(VoiceTranscriber):
+        def transcribe(self, audio_path, language="en", identify_speakers=False, **kw):
+            seen.update(kw)
+            return super().transcribe(audio_path, language, identify_speakers)
+
+    with world.Session() as db:
+        db.add(VoiceProfile(id="self", owner_id=uid(db, "r@example.com"), display_name="Rahul Patel", embeddings=[A], email="r@example.com"))
+        db.get(Meeting, "m").source = "online_tab"
+        db.commit()
+        pipeline.transcribe_step(db, db.get(Meeting, "m"), "x.wav", identify_speakers=True,
+                                 transcriber=Spy({"Speaker 1": NEAR_A, "Speaker 2": FAR}))
+    assert seen["online"] is True and seen["local_name"] is not None
+    seen.clear()
+    with world.Session() as db:
+        db.get(Meeting, "m").source = "upload"
+        db.commit()
+        pipeline.transcribe_step(db, db.get(Meeting, "m"), "x.wav", identify_speakers=True,
+                                 transcriber=Spy({"Speaker 1": NEAR_A, "Speaker 2": FAR}))
+    assert "online" not in seen and "local_name" not in seen

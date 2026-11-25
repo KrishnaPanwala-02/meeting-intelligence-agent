@@ -15,7 +15,11 @@ import {
 } from '../lib/capture'
 import { pickRecordingType } from './Recorder'
 import { IconMic } from './icons'
-import { Button, Check } from './ui'
+import { recordingApi } from '../api/endpoints'
+import { Button, Check, ChipInput } from './ui'
+
+const ANNOUNCEMENT =
+  'Heads-up: I am recording this meeting so an AI note-taker can write the transcript, summary and action items. The audio stays on my computer. Please tell me now if you do not agree.'
 
 type Phase = 'idle' | 'asking' | 'recording' | 'done'
 
@@ -25,8 +29,18 @@ const AUDIO_BITRATE = 64_000 // plenty for speech, and keeps a long meeting well
  * Record an online meeting (Google Meet, Zoom or Teams in a browser tab): the tab's audio, mixed with
  * your microphone. It checks that meeting audio really arrives, and warns if it goes silent.
  */
-export default function OnlineRecorder({ onUse }: { onUse: (file: File, info: CaptureInfo) => void }) {
+export default function OnlineRecorder({
+  onUse,
+  members = [],
+}: {
+  onUse: (file: File, info: CaptureInfo) => void
+  /** Registered members that can be picked as the people in the meeting. */
+  members?: { name: string; email: string }[]
+}) {
   const support = captureSupport()
+  const [others, setOthers] = useState<string[]>([]) // people in the meeting, to be told it is recorded
+  const [told, setTold] = useState<{ notified: string[]; not_registered: string[] } | null>(null)
+  const [copied, setCopied] = useState(false)
   const [phase, setPhase] = useState<Phase>('idle')
   const [consent, setConsent] = useState(false)
   const [useMic, setUseMic] = useState(true)
@@ -189,6 +203,9 @@ export default function OnlineRecorder({ onUse }: { onUse: (file: File, info: Ca
         })
       }, 150)
       setPhase('recording')
+      if (others.length) {
+        recordingApi.notify(others).then(setTold).catch(() => setTold({ notified: [], not_registered: others }))
+      }
     } catch (e) {
       fail(describeCaptureError(e))
     }
@@ -244,8 +261,35 @@ export default function OnlineRecorder({ onUse }: { onUse: (file: File, info: Ca
           <Check checked={useMic} onChange={setUseMic}>
             Also record my microphone (so my own voice is included)
           </Check>
+          <ChipInput
+            label="Who is in this meeting? (optional)"
+            values={others}
+            onChange={setOthers}
+            suggestions={members}
+            placeholder="Pick members or type an e-mail"
+            help="Registered members are sent a notification (and an e-mail, if enabled) as soon as recording starts."
+          />
+          <div className="alert info" role="note">
+            <div>
+            <p style={{ margin: 0 }}>
+              Google Meet, Zoom and Teams only show their own “recording” banner when <em>they</em> record, so they cannot tell people about this recording. Paste this message into the meeting chat:
+            </p>
+            <p className="small" style={{ margin: '.4rem 0' }}>
+              <q>{ANNOUNCEMENT}</q>
+            </p>
+            <Button
+              size="sm"
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(ANNOUNCEMENT).then(() => setCopied(true), () => setCopied(false))
+              }}
+            >
+              {copied ? 'Copied' : 'Copy message'}
+            </Button>
+            </div>
+          </div>
           <Check checked={consent} onChange={setConsent}>
-            Everyone in this meeting knows it is being recorded
+            I have told everyone in this meeting that it is being recorded
           </Check>
           <div>
             <Button variant="primary" type="button" onClick={() => void start()} disabled={!consent}>
@@ -295,6 +339,16 @@ export default function OnlineRecorder({ onUse }: { onUse: (file: File, info: Ca
           {silent.mic && !silent.tab && (
             <div className="alert warn" role="alert">
               Your microphone is silent. If you are speaking, check that it is not muted or that the right microphone is selected.
+            </div>
+          )}
+          {told && (told.notified.length > 0 || told.not_registered.length > 0) && (
+            <div className="alert info" role="status">
+              {told.notified.length > 0 && <div>Notified: {told.notified.join(', ')}.</div>}
+              {told.not_registered.length > 0 && (
+                <div>
+                  No account here for {told.not_registered.join(', ')}, so tell them in the meeting chat (copy the message before you start).
+                </div>
+              )}
             </div>
           )}
           {notes.map((n) => (
